@@ -20,3 +20,8 @@ Open http://127.0.0.1:8000. The database is created automatically as `crm.db` be
 - `/docs` provides the generated API documentation.
 
 `main.py` is the complete single-file version: no Docker, PostgreSQL, migrations, templates, static files, authentication, or SQLModel setup is required.
+
+The app supports:
+
+- create edit delete
+- search both customers and products
