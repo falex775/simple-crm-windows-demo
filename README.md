@@ -4,9 +4,9 @@ A minimal, single-file CRM based on the original FastAPI/SQLModel project. It ke
 
 ## Windows
 
-```powershell
+```cmd
 py -m venv .venv
-.venv\Scripts\Activate.ps1
+.venv\Scripts\activate.bat
 pip install -r requirements.txt
 py main.py
 ```
