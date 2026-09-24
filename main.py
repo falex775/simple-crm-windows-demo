@@ -18,9 +18,15 @@ class Product(BaseModel):
     name: str
 
 
+class CustomerProductLink(BaseModel):
+    customer_id: int
+    product_id: int
+
+
 def db():
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
+    con.execute("PRAGMA foreign_keys = ON")
     return con
 
 
@@ -37,6 +43,13 @@ def init_db():
             CREATE TABLE IF NOT EXISTS products(
                 id INTEGER PRIMARY KEY,
                 name TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS customer_products(
+                customer_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                PRIMARY KEY (customer_id, product_id),
+                FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE CASCADE,
+                FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
             );
             """
         )
@@ -132,13 +145,32 @@ def remove_product(item_id: int):
     return {"ok": True}
 
 
+@app.post("/api/links")
+def link_customer_product(item: CustomerProductLink):
+    with db() as con:
+        customer = con.execute("SELECT id FROM customers WHERE id=?", (item.customer_id,)).fetchone()
+        if customer is None:
+            raise HTTPException(404, "Customer not found")
+        product = con.execute("SELECT id FROM products WHERE id=?", (item.product_id,)).fetchone()
+        if product is None:
+            raise HTTPException(404, "Product not found")
+        try:
+            con.execute(
+                "INSERT INTO customer_products(customer_id, product_id) VALUES(?, ?)",
+                (item.customer_id, item.product_id),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "Customer is already linked to this product")
+    return {"ok": True, **item.model_dump()}
+
+
 HTML = """<!doctype html>
 <title>Tiny CRM</title>
 <style>
 body{font:16px system-ui;max-width:980px;margin:30px auto;padding:0 16px;background:#f4f7fb;color:#18212f}
 main{display:grid;grid-template-columns:1fr 1fr;gap:20px}
 .card{background:#fff;border-radius:12px;padding:18px;box-shadow:0 2px 10px rgba(15,23,42,.08)}
-input,button{padding:9px 10px;border-radius:8px;border:1px solid #cdd8e4;font-size:15px}
+input,button,select{padding:9px 10px;border-radius:8px;border:1px solid #cdd8e4;font-size:15px}
 input{width:100%;box-sizing:border-box;margin:4px 0}
 button{cursor:pointer;background:#1d6fe8;color:white;border:0;min-width:80px;margin:2px}
 button.secondary{background:#e9edf5;color:#172033;border:1px solid #d3dae5}
@@ -150,7 +182,7 @@ ul{list-style:none;padding:0;margin:10px 0 0}
 li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #edf1f5}
 small{color:#667085}
 .hidden{display:none}
-@media(max-width:700px){main{grid-template-columns:1fr}}
+@media(max-width:700px){main{grid-template-columns:1fr}#linkForm{grid-template-columns:1fr!important}}
 </style>
 <h1>📇 Tiny CRM</h1>
 <p><small>SQLite demo with create, edit, delete and search</small></p>
@@ -185,6 +217,15 @@ small{color:#667085}
     <ul id="productsList"></ul>
   </section>
 </main>
+<section class="card" style="margin-top:20px">
+  <h2>Link customer ↔ product</h2>
+  <form id="linkForm" style="grid-template-columns:1fr 1fr auto;display:grid;gap:8px;align-items:center">
+    <select id="linkCustomer" required></select>
+    <select id="linkProduct" required></select>
+    <button type="submit" class="link">Link</button>
+  </form>
+  <small id="linkMessage"></small>
+</section>
 <script>
 const state = { customers: [], products: [] };
 const $ = (id) => document.getElementById(id);
@@ -209,11 +250,21 @@ function renderList(kind, rows) {
     </li>`).join('');
 }
 
+function renderLinkOptions() {
+  $('linkCustomer').innerHTML = state.customers.length
+    ? state.customers.map(row => `<option value="${row.id}">${esc(row.name)}</option>`).join('')
+    : '<option value="">Add a customer first</option>';
+  $('linkProduct').innerHTML = state.products.length
+    ? state.products.map(row => `<option value="${row.id}">${esc(row.name)}</option>`).join('')
+    : '<option value="">Add a product first</option>';
+}
+
 async function load(kind) {
   const q = ($(kind + 'Search').value || '').trim();
   const rows = await fetch('/api/' + kind + (q ? '?search=' + encodeURIComponent(q) : '')).then(r => r.json());
   state[kind] = rows;
   renderList(kind, rows);
+  renderLinkOptions();
 }
 
 function resetForm(kind) {
@@ -259,6 +310,21 @@ async function submitForm(kind, event) {
   resetForm(kind);
   load(kind);
 }
+
+$('linkForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const message = $('linkMessage');
+  const response = await fetch('/api/links', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      customer_id: Number($('linkCustomer').value),
+      product_id: Number($('linkProduct').value)
+    })
+  });
+  const result = await response.json();
+  message.textContent = response.ok ? 'Customer and product linked.' : (result.detail || 'Could not create link.');
+});
 
 ['customers', 'products'].forEach(kind => {
   const form = $(kind + 'Form');
