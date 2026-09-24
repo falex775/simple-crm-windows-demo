@@ -164,6 +164,37 @@ def link_customer_product(item: CustomerProductLink):
     return {"ok": True, **item.model_dump()}
 
 
+@app.get("/api/customers/{customer_id}/products")
+def customer_products(customer_id: int):
+    with db() as con:
+        customer = con.execute("SELECT id FROM customers WHERE id=?", (customer_id,)).fetchone()
+        if customer is None:
+            raise HTTPException(404, "Customer not found")
+        rows = con.execute(
+            """
+            SELECT p.id, p.name
+            FROM products p
+            JOIN customer_products cp ON cp.product_id = p.id
+            WHERE cp.customer_id = ?
+            ORDER BY p.name
+            """,
+            (customer_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+@app.delete("/api/links")
+def unlink_customer_product(item: CustomerProductLink):
+    with db() as con:
+        changed = con.execute(
+            "DELETE FROM customer_products WHERE customer_id=? AND product_id=?",
+            (item.customer_id, item.product_id),
+        )
+        if changed.rowcount == 0:
+            raise HTTPException(404, "Link not found")
+    return {"ok": True}
+
+
 HTML = """<!doctype html>
 <title>Tiny CRM</title>
 <style>
@@ -182,6 +213,7 @@ ul{list-style:none;padding:0;margin:10px 0 0}
 li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid #edf1f5}
 small{color:#667085}
 .hidden{display:none}
+#linkedProductsPanel ul{margin-top:8px}
 @media(max-width:700px){main{grid-template-columns:1fr}#linkForm{grid-template-columns:1fr!important}}
 </style>
 <h1>📇 Tiny CRM</h1>
@@ -226,6 +258,11 @@ small{color:#667085}
   </form>
   <small id="linkMessage"></small>
 </section>
+<section class="card" id="linkedProductsPanel" style="margin-top:20px">
+  <h2>Linked products</h2>
+  <select id="linkedProductsCustomer" aria-label="Choose a customer"></select>
+  <ul id="linkedProductsList"></ul>
+</section>
 <script>
 const state = { customers: [], products: [] };
 const $ = (id) => document.getElementById(id);
@@ -251,12 +288,16 @@ function renderList(kind, rows) {
 }
 
 function renderLinkOptions() {
-  $('linkCustomer').innerHTML = state.customers.length
+  const customerOptions = state.customers.length
     ? state.customers.map(row => `<option value="${row.id}">${esc(row.name)}</option>`).join('')
     : '<option value="">Add a customer first</option>';
+  $('linkCustomer').innerHTML = customerOptions;
+  $('linkedProductsCustomer').innerHTML = customerOptions;
   $('linkProduct').innerHTML = state.products.length
     ? state.products.map(row => `<option value="${row.id}">${esc(row.name)}</option>`).join('')
     : '<option value="">Add a product first</option>';
+  if (state.customers.length) loadLinkedProducts();
+  else $('linkedProductsList').innerHTML = '<li><small>Add a customer first</small></li>';
 }
 
 async function load(kind) {
@@ -265,6 +306,41 @@ async function load(kind) {
   state[kind] = rows;
   renderList(kind, rows);
   renderLinkOptions();
+}
+
+async function loadLinkedProducts() {
+  const customerId = Number($('linkedProductsCustomer').value);
+  const list = $('linkedProductsList');
+  if (!customerId) {
+    list.innerHTML = '<li><small>Select a customer to see linked products</small></li>';
+    return;
+  }
+  const response = await fetch('/api/customers/' + customerId + '/products');
+  const rows = await response.json();
+  if (!rows.length) {
+    list.innerHTML = '<li><small>No products linked to this customer</small></li>';
+    return;
+  }
+  list.innerHTML = rows.map(row => `
+    <li>
+      <span>${esc(row.name)}</span>
+      <button type="button" class="danger" onclick="unlinkProduct(${customerId}, ${row.id})">Unlink</button>
+    </li>`).join('');
+}
+
+async function unlinkProduct(customerId, productId) {
+  const response = await fetch('/api/links', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customer_id: customerId, product_id: productId })
+  });
+  if (!response.ok) {
+    const result = await response.json();
+    $('linkMessage').textContent = result.detail || 'Could not remove link.';
+    return;
+  }
+  $('linkMessage').textContent = 'Link removed.';
+  loadLinkedProducts();
 }
 
 function resetForm(kind) {
@@ -324,7 +400,13 @@ $('linkForm').addEventListener('submit', async (event) => {
   });
   const result = await response.json();
   message.textContent = response.ok ? 'Customer and product linked.' : (result.detail || 'Could not create link.');
+  if (response.ok) {
+    $('linkedProductsCustomer').value = $('linkCustomer').value;
+    loadLinkedProducts();
+  }
 });
+
+$('linkedProductsCustomer').addEventListener('change', loadLinkedProducts);
 
 ['customers', 'products'].forEach(kind => {
   const form = $(kind + 'Form');
@@ -336,6 +418,7 @@ $('linkForm').addEventListener('submit', async (event) => {
 
 window.edit = edit;
 window.del = del;
+window.unlinkProduct = unlinkProduct;
 </script>
 """
 
